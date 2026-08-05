@@ -7,6 +7,9 @@ class Tool(ABC):
     name: str
     description: str
     parameters: dict
+    # 仅当工具可与任意其他 True 工具并发时才覆盖为 True。
+    # 新工具默认不安全，避免遗漏审计后被错误并发。
+    is_concurrency_safe: bool = False
 
     @abstractmethod
     def execute(self, **kwargs) -> str:

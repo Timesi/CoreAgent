@@ -6,6 +6,7 @@ from .base import Tool
 
 class ReadFileTool(Tool):
     name = "read_file"
+    is_concurrency_safe = True
     description = (
         "Read a file's contents with line numbers. "
         "Always read a file before editing it."

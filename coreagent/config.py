@@ -27,7 +27,7 @@ def _load_dotenv():
 
 @dataclass
 class Config:
-    model: str = "gpt-5.5"
+    model: str = "gpt-5.6-luna"
     api_key: str = ""
     base_url: str | None = None
     max_tokens: int = 4096
@@ -47,7 +47,7 @@ class Config:
             or ""
         )
         return cls(
-            model=os.getenv("COREAGENT_MODEL", "gpt-5.5"),
+            model=os.getenv("COREAGENT_MODEL", "gpt-5.6-luna"),
             api_key=api_key,
             base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("COREAGENT_BASE_URL"),
             max_tokens=int(os.getenv("COREAGENT_MAX_TOKENS", "4096")),

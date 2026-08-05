@@ -25,7 +25,7 @@ class Agent:
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
-        self._tools_by_name = {t.name: t for t in self.tools}
+        self._tool_by_name = {t.name: t for t in self.tools}
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.max_rounds = max_rounds
@@ -44,7 +44,7 @@ class Agent:
 
     def _exec_tool(self, tc) -> str:
         # 执行单工具调用，返回工具执行结果
-        tool = self._tools_by_name.get(tc.name)
+        tool = self._tool_by_name.get(tc.name)
         if tool is None:
             return f"Error: unknown tool '{tc.name}'"
 
@@ -59,18 +59,53 @@ class Agent:
         except Exception as e:
             return f"Error executing {tc.name}: {e}"
 
-    def _exec_tools_parallel(self, tool_calls, on_tool=None) -> list[str]:
-        # 使用线程并发调用多个工具
-        for tc in tool_calls:
+    def _is_concurrency_safe(self, tc) -> bool:
+        tool = self._tool_by_name.get(tc.name)
+        # 未知工具也按不安全处理；它最终仍由 _exec_tool 返回原有错误文本。
+        return tool is not None and tool.is_concurrency_safe
+
+    def _run_safe_batch(self, batch, results, on_tool=None) -> None:
+        if not batch:
+            return
+
+        for _, tc in batch:
             if on_tool:
                 on_tool(tc.name, tc.arguments)
 
+        # 在非并发安全的工具前只有单工具调用则不需要线程池
+        if len(batch) == 1:
+            index, tc = batch[0]
+            results[index] = self._exec_tool(tc)
+            return
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [pool.submit(self._exec_tool, tc) for tc in tool_calls]
-            return [f.result() for f in futures]
+            futures = [(index, pool.submit(self._exec_tool, tc)) for index, tc in batch]
+            for index, future in futures:
+                results[index] = future.result()
+
+    def _exec_tool_calls(self, tool_calls, on_tool=None) -> list[str]:
+        results: list[str | None] = [None] * len(tool_calls)
+        safe_batch = []
+
+        for index, tc in enumerate(tool_calls):
+            if self._is_concurrency_safe(tc):
+                safe_batch.append((index, tc))
+                continue
+
+            # 非并发安全工具是屏障：先结束全部并发安全调用，再单独运行非并发安全工具
+            self._run_safe_batch(safe_batch, results, on_tool)
+            safe_batch.clear()
+
+            if on_tool:
+                on_tool(tc.name, tc.arguments)
+            results[index] = self._exec_tool(tc)
+
+        # 执行剩下的并发安全工具
+        self._run_safe_batch(safe_batch, results, on_tool)
+        return [result if result is not None else "" for result in results]
 
     def _answer_pending_tool_calls(self, tool_calls):
-        # 为每次未收到回复的呼叫补充一个工具回复。
+        # 为每次未收到回复的call补充一个工具回复。
         # 与 OpenAI 兼容的 API 会拒绝包含工具调用但未对应工具回复的助手消息，因此当执行中途被中断时，历史记录仍保持有效。
         answered = {m.get("tool_call_id") for m in self.messages if m.get("role") == "tool"}
         for tc in tool_calls:
@@ -105,25 +140,14 @@ class Agent:
             self.messages.append(resp.message)
 
             try:
-                if len(resp.tool_calls) == 1:
-                    tc = resp.tool_calls[0]
-                    if on_tool:
-                        on_tool(tc.name, tc.arguments)
-                    result = self._exec_tool(tc)
+                # 多工具调用
+                results = self._exec_tool_calls(resp.tool_calls, on_tool)
+                for tc, result in zip(resp.tool_calls, results):
                     self.messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": result,
                     })
-                else:
-                    # 并行执行多工具调用
-                    results = self._exec_tools_parallel(resp.tool_calls, on_tool)
-                    for tc, result in zip (resp.tool_calls, results):
-                        self.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": result,
-                        })
             except KeyboardInterrupt:
                 # 执行过程中按 Ctrl+C 会导致助手工具调用消息无响应，从而污染下一次请求
                 self._answer_pending_tool_calls(resp.tool_calls)

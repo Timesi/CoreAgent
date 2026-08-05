@@ -6,6 +6,7 @@ from .base import Tool
 
 class GlobTool(Tool):
     name = "glob"
+    is_concurrency_safe = True
     description = (
         "Find files matching a glob pattern. "
         "Supports ** for recursive matching (e.g. '**/*.py')."
